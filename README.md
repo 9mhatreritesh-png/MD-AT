@@ -1,115 +1,144 @@
-# MD-AT
-convert file MD AT
 import pdfplumber
 import pandas as pd
 import re
 from pathlib import Path
 
 PDF_FOLDER = r"C:\Users\Ritesh\Downloads\Payment Stub_NY\MD\AT\Data"
-OUTPUT_CSV = r"C:\Users\Ritesh\Downloads\Payment Stub_NY\MD\AT\Data\Combined_Attendance.csv"
+OUTPUT_FILE = r"C:\Users\Ritesh\Downloads\Payment Stub_NY\MD\AT\Data\Combined_Attendance.csv"
 
 all_rows = []
 
 for pdf_file in Path(PDF_FOLDER).glob("*.pdf"):
 
-    print(f"Processing: {pdf_file.name}")
+    print(f"Processing : {pdf_file.name}")
 
-    pdf_name = pdf_file.stem
-
-    service_period = ""
+    pdf_name = pdf_file.stem.split()[0]
 
     try:
+
         with pdfplumber.open(pdf_file) as pdf:
 
-            pages_text = []
+            first_page_text = pdf.pages[0].extract_text()
 
-            for page in pdf.pages:
-                txt = page.extract_text()
-                if txt:
-                    pages_text.append(txt)
+            service_start = ""
+            service_end = ""
 
-            full_text = "\n".join(pages_text)
-
-            # Service Period
-            sp = re.search(
-                r'Service Period and Year\s*([0-9/]+-[0-9/]+)',
-                full_text,
-                re.IGNORECASE
+            m = re.search(
+                r'(\d{1,2}/\d{1,2}/\d{4})-(\d{1,2}/\d{1,2}/\d{4})',
+                first_page_text
             )
 
-            if sp:
-                service_period = sp.group(1)
+            if m:
+                service_start = pd.to_datetime(
+                    m.group(1)
+                ).strftime("%m-%d-%Y")
 
-            lines = full_text.split("\n")
+                service_end = pd.to_datetime(
+                    m.group(2)
+                ).strftime("%m-%d-%Y")
 
-            i = 0
+            for page in pdf.pages:
 
-            while i < len(lines):
+                tables = page.extract_tables()
 
-                line = lines[i].strip()
-
-                match = re.search(
-                    r'^(.*?)\s+(\d{7})\s+([YN])\s+(.*)$',
-                    line
-                )
-
-                if match:
-
-                    child_name = match.group(1).strip()
-                    voucher = match.group(2).strip()
-                    non_traditional = match.group(3).strip()
-
-                    week1 = match.group(4).strip()
-
-                    week2 = ""
-                    if i + 1 < len(lines):
-                        week2 = lines[i + 1].strip()
-
-                    def extract_day(day):
-
-                        p1 = re.search(rf'{day}\[[X]?\]', week1)
-                        p2 = re.search(rf'{day}\[[X]?\]', week2)
-
-                        v1 = p1.group(0) if p1 else f"{day}[]"
-                        v2 = p2.group(0) if p2 else f"{day}[]"
-
-                        return f"{v1}\n{v2}"
-
-                    row = {
-                        "pdf name": pdf_name,
-                        "Service Period and Year": service_period,
-                        "9. Names of Children": child_name,
-                        "10. Voucher Number": voucher,
-                        "11. Non-Traditional Hours (Y or N)": non_traditional,
-                        "M": extract_day("M"),
-                        "Tu": extract_day("Tu"),
-                        "W": extract_day("W"),
-                        "Th": extract_day("Th"),
-                        "F": extract_day("F"),
-                        "Sa": extract_day("Sa"),
-                        "Su": extract_day("Su")
-                    }
-
-                    all_rows.append(row)
-
-                    i += 2
+                if not tables:
                     continue
 
-                i += 1
+                for table in tables:
+
+                    for row in table:
+
+                        if not row:
+                            continue
+
+                        row = [str(x).strip() if x else "" for x in row]
+
+                        if len(row) < 4:
+                            continue
+
+                        child_name = row[0].replace("\n", " ").strip()
+                        voucher = row[1].strip()
+                        non_traditional = row[2].strip()
+
+                        if not re.fullmatch(r"\d{7}", voucher):
+                            continue
+
+                        attendance = row[3]
+
+                        lines = [
+                            x.strip()
+                            for x in attendance.split("\n")
+                            if x.strip()
+                        ]
+
+                        week1 = lines[0] if len(lines) > 0 else ""
+                        week2 = lines[1] if len(lines) > 1 else ""
+
+                        def get_day(day):
+
+                            p1 = re.search(
+                                rf"{day}\[[X]?\]",
+                                week1
+                            )
+
+                            p2 = re.search(
+                                rf"{day}\[[X]?\]",
+                                week2
+                            )
+
+                            v1 = p1.group(0) if p1 else f"{day}[]"
+                            v2 = p2.group(0) if p2 else f"{day}[]"
+
+                            return f"{v1}\n{v2}"
+
+                        all_rows.append({
+                            "PDF Name": pdf_name,
+                            "Service Start Date": service_start,
+                            "Service End Date": service_end,
+                            "Child Name": child_name,
+                            "Voucher Number": voucher,
+                            "Non-Traditional Hours": non_traditional,
+                            "M": get_day("M"),
+                            "Tu": get_day("Tu"),
+                            "W": get_day("W"),
+                            "Th": get_day("Th"),
+                            "F": get_day("F"),
+                            "Sa": get_day("Sa"),
+                            "Su": get_day("Su")
+                        })
 
     except Exception as e:
-        print(f"Error in {pdf_file.name}: {e}")
+        print(f"Error : {pdf_file.name}")
+        print(str(e))
 
 df = pd.DataFrame(all_rows)
 
+column_order = [
+    "PDF Name",
+    "Service Start Date",
+    "Service End Date",
+    "Child Name",
+    "Voucher Number",
+    "Non-Traditional Hours",
+    "M",
+    "Tu",
+    "W",
+    "Th",
+    "F",
+    "Sa",
+    "Su"
+]
+
+df = df[column_order]
+
 df.to_csv(
-    OUTPUT_CSV,
+    OUTPUT_FILE,
     index=False,
     encoding="utf-8-sig"
 )
 
 print("=" * 60)
 print("DONE")
-print("Total Records :", len(df))
-print("Output File :", OUTPUT_CSV)
+print("Records :", len(df))
+print("Output :", OUTPUT_FILE)
 print("=" * 60)
